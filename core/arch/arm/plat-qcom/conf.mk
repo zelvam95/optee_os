@@ -17,7 +17,7 @@ supported-ta-targets ?= ta_arm64
 
 # Architecture family mapping
 HOYA_ARCH_CHIPSETS := kodiak lemans
-BOBCAT_ARCH_CHIPSETS := ipq96xx
+BOBCAT_ARCH_CHIPSETS := ipq96xx ipq54xx
 
 ifneq (,$(filter $(PLATFORM_FLAVOR),$(HOYA_ARCH_CHIPSETS)))
 QCOM_ARCH_FAMILY := hoya
