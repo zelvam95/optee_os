@@ -59,3 +59,13 @@ endif
 ifneq ($(CFG_CRYPTO),n)
 $(call force,CFG_CRYPTO_WITH_CE,y)
 endif
+
+# Targets that embed their DT set CFG_EMBED_DTB_SOURCE_FILE in target.mk
+ifneq ($(strip $(CFG_EMBED_DTB_SOURCE_FILE)),)
+# The embedded DTB is OP-TEE's own, leave the non-secure DTB alone
+$(call force,CFG_EXTERNAL_DT,n)
+# x2 is not a DTB (get_aslr_seed() would read it with CFG_DT=y)
+$(call force,CFG_DT_ADDR,0)
+# Qualcomm clocks are acquired by name, not described in DT
+CFG_DRIVERS_CLK_DT ?= n
+endif
