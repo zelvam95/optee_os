@@ -20,6 +20,8 @@
 register_phys_mem_pgdir(MEM_AREA_IO_NSEC, GENI_UART_REG_BASE,
 			GENI_UART_REG_SIZE);
 
+/* An embedded DT, if there is one, gives the GIC bases and the DRAM */
+#ifndef CFG_EMBED_DTB
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, GICD_BASE, GIC_DIST_REG_SIZE);
 #ifdef _CFG_ARM_GIC_V3_OR_V4
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, GICR_BASE,
@@ -35,6 +37,7 @@ register_ddr(DRAM1_BASE, DRAM1_SIZE);
 #ifdef DRAM2_BASE
 register_ddr(DRAM2_BASE, DRAM2_SIZE);
 #endif
+#endif /*!CFG_EMBED_DTB*/
 
 static struct qcom_geni_uart_data console_data;
 
@@ -67,7 +70,10 @@ boot_final(platform_banner);
 
 void boot_primary_init_intc(void)
 {
-#ifdef _CFG_ARM_GIC_V3_OR_V4
+#ifdef CFG_EMBED_DTB
+	/* No bases, the GIC driver takes them from the DT */
+	gic_init(0, 0);
+#elif defined(_CFG_ARM_GIC_V3_OR_V4)
 	gic_init_v3(0, GICD_BASE, GICR_BASE);
 #else
 	gic_init(GICC_BASE, GICD_BASE);
