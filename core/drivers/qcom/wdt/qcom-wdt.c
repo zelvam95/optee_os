@@ -6,6 +6,7 @@
 #include <arm.h>
 #include <initcall.h>
 #include <io.h>
+#include <kernel/delay.h>
 #include <kernel/interrupt.h>
 #include <kernel/panic.h>
 #include <mm/core_memprot.h>
@@ -17,11 +18,19 @@
 #define QCOM_WDT_BARK_TIME_OFFSET		0x10
 #define QCOM_WDT_BITE_TIME_OFFSET		0x14
 #define QCOM_WDT_RESET_REG_OFFSET		0x4
+#define QCOM_WDT_STS_OFFSET			0x0c
 
 #define QCOM_WDT_CTL_INT_ENABLE		BIT32(0)
 #define QCOM_WDT_CTL_UNMASKED_INT_ENABLE	BIT32(1)
 
 #define QCOM_WDT_RESET_REG_RESET		UINT32_C(1)
+
+/* STS[20:1] is the counter, the bark stays asserted while it is >= bark time */
+#define QCOM_WDT_STS_COUNT_SHIFT		1
+#define QCOM_WDT_STS_COUNT_MASK			UINT32_C(0xFFFFF)
+
+/* The reset needs a few 32 kHz cycles to reach the counter */
+#define QCOM_WDT_RESET_TIMEOUT_US		1000U
 
 #define QCOM_WDT_BARK_TIME_RMSK		0xFFFFFU
 #define QCOM_WDT_BITE_TIME_RMSK		0xFFFFFU
@@ -38,6 +47,7 @@ register_phys_mem_pgdir(MEM_AREA_IO_SEC, QCOM_WDT_TMR_BASE,
 			CORE_MMU_PGDIR_SIZE);
 
 static vaddr_t qcom_wdt_base;
+static uint32_t qcom_wdt_bark_ticks;
 
 static void qcom_wdt_enable(bool enable)
 {
@@ -55,6 +65,12 @@ static void qcom_wdt_reset(void)
 		   QCOM_WDT_RESET_REG_RESET);
 }
 
+static uint32_t qcom_wdt_count(void)
+{
+	return (io_read32(qcom_wdt_base + QCOM_WDT_STS_OFFSET) >>
+		QCOM_WDT_STS_COUNT_SHIFT) & QCOM_WDT_STS_COUNT_MASK;
+}
+
 static void qcom_wdt_start(void)
 {
 	uint32_t bark_timeout = QCOM_WDT_MS_TO_TICKS(QCOM_WDT_BARK_TIME_MS);
@@ -62,6 +78,7 @@ static void qcom_wdt_start(void)
 
 	/* Timeouts have a ceiling value */
 	bark_timeout = MIN(bark_timeout, QCOM_WDT_BARK_TIME_RMSK);
+	qcom_wdt_bark_ticks = bark_timeout;
 	bite_timeout = MIN(bite_timeout, QCOM_WDT_BITE_TIME_RMSK);
 
 	io_write32(qcom_wdt_base + QCOM_WDT_BARK_TIME_OFFSET, bark_timeout);
@@ -75,8 +92,22 @@ static void qcom_wdt_start(void)
 static enum itr_return
 qcom_wdt_bark_handler(struct itr_handler *h __unused)
 {
-	io_write32(qcom_wdt_base + QCOM_WDT_RESET_REG_OFFSET,
-		   QCOM_WDT_RESET_REG_RESET);
+	uint64_t timeout = 0;
+
+	qcom_wdt_reset();
+
+	/*
+	 * The bark is a level interrupt and stays asserted until the reset has
+	 * reached the counter. Wait for that, otherwise it fires again as soon
+	 * as it is acknowledged.
+	 */
+	timeout = timeout_init_us(QCOM_WDT_RESET_TIMEOUT_US);
+	while (qcom_wdt_count() >= qcom_wdt_bark_ticks) {
+		if (timeout_elapsed(timeout)) {
+			DMSG("wdt: bark still asserted after reset");
+			break;
+		}
+	}
 
 	return ITRR_HANDLED;
 }
