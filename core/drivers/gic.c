@@ -576,11 +576,23 @@ static void gic_init_base_addr(paddr_t gicc_base_pa, paddr_t gicd_base_pa,
 		gd->chip.dt_get_irq = gic_dt_get_irq;
 }
 
+#ifdef CFG_DT
+static TEE_Result gic_dt_get_bases(paddr_t *gicc, paddr_t *gicd,
+				   paddr_t *gicr);
+#endif
+
 void gic_init_v3(paddr_t gicc_base_pa, paddr_t gicd_base_pa,
 		 paddr_t gicr_base_pa)
 {
 	struct gic_data __maybe_unused *gd = &gic_data;
 	size_t __maybe_unused n = 0;
+
+#ifdef CFG_DT
+	/* Without a distributor base from the platform, use the DT */
+	if (!gicd_base_pa &&
+	    gic_dt_get_bases(&gicc_base_pa, &gicd_base_pa, &gicr_base_pa))
+		panic("No usable GIC node in the DT");
+#endif
 
 	gic_init_base_addr(gicc_base_pa, gicd_base_pa, gicr_base_pa);
 
@@ -1186,8 +1198,51 @@ static const struct dt_device_match gic_match_table[] = {
 	{ .compatible = "arm,cortex-a5-gic" },
 	{ .compatible = "arm,cortex-a9-gic" },
 	{ .compatible = "arm,gic-400" },
+	{ .compatible = "arm,gic-v3" },
+	{ .compatible = "qcom,msm-qgic2" },
 	{ }
 };
+
+/*
+ * The first register window is the distributor, the second one the CPU
+ * interface (GICv2) or the redistributors (GICv3 and GICv4).
+ */
+static TEE_Result gic_dt_get_bases(paddr_t *gicc, paddr_t *gicd,
+				   paddr_t *gicr)
+{
+	const struct dt_device_match *match = NULL;
+	const void *fdt = get_dt();
+	paddr_t base[2] = { };
+	size_t size[2] = { };
+	int node = -1;
+	int i = 0;
+
+	if (!fdt)
+		return TEE_ERROR_ITEM_NOT_FOUND;
+
+	for (match = gic_match_table; match->compatible && node < 0; match++)
+		node = fdt_node_offset_by_compatible(fdt, -1,
+						     match->compatible);
+	if (node < 0)
+		return TEE_ERROR_ITEM_NOT_FOUND;
+
+	for (i = 0; i < 2; i++) {
+		if (fdt_get_reg_props_by_index(fdt, node, i, &base[i],
+					       &size[i]))
+			return TEE_ERROR_BAD_FORMAT;
+		if (!core_mmu_add_mapping(MEM_AREA_IO_SEC, base[i], size[i]))
+			return TEE_ERROR_GENERIC;
+	}
+
+	DMSG("GIC: bases from DT: %#"PRIxPA" %#"PRIxPA, base[0], base[1]);
+	*gicd = base[0];
+	if (IS_ENABLED2(_CFG_ARM_GIC_V3_OR_V4))
+		*gicr = base[1];
+	else
+		*gicc = base[1];
+
+	return TEE_SUCCESS;
+}
 
 DEFINE_DT_DRIVER(gic_dt_driver) = {
 	.name = "gic",
