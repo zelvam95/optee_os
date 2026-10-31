@@ -8,7 +8,9 @@
 #include <drivers/qcom/ramblur/v3/ramblur_pimem_hwio.h>
 #include <initcall.h>
 #include <io.h>
+#include <kernel/dt.h>
 #include <kernel/panic.h>
+#include <libfdt.h>
 #include <mm/core_memprot.h>
 #include <string.h>
 
@@ -286,15 +288,64 @@ static TEE_Result initialize_window(int window, size_t size, uintptr_t vault)
 	return TEE_SUCCESS;
 }
 
+#if !defined(CFG_EMBED_DTB)
+static void get_config(paddr_t *reg_base, size_t *reg_size,
+		       paddr_t *vault_base, size_t *vault_size)
+{
+	*reg_base = RAMBLUR_PIMEM_REG_BASE;
+	*reg_size = RAMBLUR_PIMEM_REG_SIZE;
+	*vault_base = RAMBLUR_PIMEM_VAULT_TA_BASE;
+	*vault_size = RAMBLUR_PIMEM_VAULT_TA_SIZE;
+}
+#else
+static void get_config(paddr_t *reg_base, size_t *reg_size,
+		       paddr_t *vault_base, size_t *vault_size)
+{
+	const void *fdt = get_dt();
+	const fdt32_t *prop = NULL;
+	int node = -1;
+	int len = 0;
+
+	if (fdt)
+		node = fdt_node_offset_by_compatible(fdt, -1,
+						     "qcom,ramblur-pimem");
+	if (node < 0 || !(fdt_get_status(fdt, node) & DT_STATUS_OK_SEC) ||
+	    fdt_get_reg_props_by_index(fdt, node, 0, reg_base, reg_size))
+		panic("No usable Ramblur pIMEM node in the DT");
+
+	prop = fdt_getprop(fdt, node, "memory-region", &len);
+	if (!prop || len < (int)sizeof(*prop))
+		panic("No Ramblur pIMEM vault in the DT");
+
+	node = fdt_node_offset_by_phandle(fdt, fdt32_to_cpu(*prop));
+	if (node < 0 ||
+	    fdt_get_reg_props_by_index(fdt, node, 0, vault_base, vault_size))
+		panic("No Ramblur pIMEM vault in the DT");
+
+	/* TA RAM is the pIMEM window over the vault */
+	if (*vault_size != CFG_TA_RAM_VA_SIZE)
+		panic("Ramblur pIMEM vault size != TA RAM size");
+
+	DMSG("Ramblur pIMEM from DT: regs %#"PRIxPA" vault %#"PRIxPA
+	     " size %#zx", *reg_base, *vault_base, *vault_size);
+}
+#endif
+
 /*
  * Trusted Applications run from protected IMEM.
  * If this region cannot be configured, abort the boot sequence.
  */
 static TEE_Result qti_ramblur_pimem_init(void)
 {
-	ramblur_va = (vaddr_t)core_mmu_add_mapping(MEM_AREA_IO_SEC,
-						   RAMBLUR_PIMEM_REG_BASE,
-						   RAMBLUR_PIMEM_REG_SIZE);
+	paddr_t reg_base = 0;
+	size_t reg_size = 0;
+	paddr_t vault_base = 0;
+	size_t vault_size = 0;
+
+	get_config(&reg_base, &reg_size, &vault_base, &vault_size);
+
+	ramblur_va = (vaddr_t)core_mmu_add_mapping(MEM_AREA_IO_SEC, reg_base,
+						   reg_size);
 	if (!ramblur_va)
 		panic("Can't map Ramblur pIMEM");
 
@@ -311,8 +362,7 @@ static TEE_Result qti_ramblur_pimem_init(void)
 	if (ramblur_version.major != 3)
 		panic();
 
-	return initialize_window(CFG_QCOM_RAMBLUR_TA_WINDOW_ID,
-				 RAMBLUR_PIMEM_VAULT_TA_SIZE,
-				 RAMBLUR_PIMEM_VAULT_TA_BASE);
+	return initialize_window(CFG_QCOM_RAMBLUR_TA_WINDOW_ID, vault_size,
+				 vault_base);
 }
 driver_init(qti_ramblur_pimem_init);
